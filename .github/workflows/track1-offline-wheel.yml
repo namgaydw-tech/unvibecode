@@ -1,0 +1,24 @@
+name: Track 1 C3 offline wheel inspection
+on:
+  push:
+    branches: [track1-c3-offline-inspection]
+permissions:
+  contents: read
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download exact public PyPI distribution
+        run: |
+          python -m pip download --no-deps 'unvibecode==0.4.0' -d wheelhouse/
+          sha256sum wheelhouse/* > wheelhouse/SHA256SUMS.txt
+          ls -l wheelhouse/
+      - name: Upload wheel for offline reproducibility
+        uses: actions/upload-artifact@v4
+        with:
+          name: unvibecode-040-wheel
+          path: wheelhouse/
+          retention-days: 7
