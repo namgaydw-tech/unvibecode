@@ -20,9 +20,6 @@ jobs:
           - target: khal
             repo: https://github.com/pimutils/khal.git
             sha: 3ba0fcef06d5244a4a7330869a8d5f18a0342ce9
-          - target: pipx
-            repo: https://github.com/pypa/pipx.git
-            sha: e7fa855353cc8c15f199b746d5e4d93b69f3c889
 
     env:
       PYTHONUTF8: '1'
@@ -56,9 +53,10 @@ jobs:
       - name: Run public repository review
         continue-on-error: true
         run: |
-          set -uo pipefail
+          set +e
           timeout --signal=TERM --kill-after=20 1200 python -m unvibecode review --repository "$GITHUB_WORKSPACE/target" > evidence/review.log 2>&1
           result=$?
+          set -e
           echo "$result" > evidence/review-exit-code.txt
           echo "Exit status: $result"
           tail -n 80 evidence/review.log
