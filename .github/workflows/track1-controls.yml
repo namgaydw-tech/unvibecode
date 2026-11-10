@@ -1,0 +1,132 @@
+name: Track 1 C3 controlled alias and pipx verification
+on:
+  push:
+    branches: [track1-c3-controls]
+permissions:
+  contents: read
+jobs:
+  controls:
+    runs-on: ubuntu-latest
+    timeout-minutes: 42
+    env:
+      PYTHONUTF8: '1'
+      BROWSER: /bin/true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install exact reviewed CLI
+        run: |
+          python -m pip install --no-input 'unvibecode==0.4.0'
+          python --version
+          python -m pip show unvibecode
+          mkdir -p evidence
+      - name: Build minimal positive and negative controls
+        run: |
+          mkdir -p fixture_target/minicli
+          cat > fixture_target/pyproject.toml <<'TOML'
+          [project]
+          name = "mini-entry-trace"
+          version = "0.0.1"
+          requires-python = ">=3.11"
+          [project.scripts]
+          aliased-cli = "minicli.cli:main_alias"
+          direct-cli = "minicli.cli:direct_cli"
+          TOML
+          touch fixture_target/minicli/__init__.py
+          cat > fixture_target/minicli/cli.py <<'PY'
+          def decorated_target():
+              return "alias-ok"
+
+          def alternate_target():
+              return "alternate-ok"
+
+          def direct_cli():
+              return "direct-ok"
+
+          main_alias, secondary_alias = decorated_target, alternate_target
+          PY
+          cat > fixture_target/minicli/consumer.py <<'PY'
+          from minicli.cli import main_alias, direct_cli
+
+          def run():
+              return main_alias(), direct_cli()
+          PY
+          cat > fixture_target/minicli/unrelated.py <<'PY'
+          def main_alias():
+              raise AssertionError("Unrelated same-named function must not be linked")
+          PY
+          python - <<'PY'
+          import sys, tomllib, importlib
+          from pathlib import Path
+          sys.path.insert(0, "fixture_target")
+          cfg = tomllib.loads(Path("fixture_target/pyproject.toml").read_text())
+          for name, endpoint in cfg["project"]["scripts"].items():
+              module,symbol=endpoint.split(":")
+              result=getattr(importlib.import_module(module),symbol)()
+              print("CONTROL", name, endpoint, result)
+              assert result in ("alias-ok","direct-ok")
+          assert importlib.import_module("minicli.consumer").run()==("alias-ok","direct-ok")
+          print("CONTROL PASS: imported aliased and direct symbols execute")
+          PY
+      - name: Run fixture and preserve graph evidence
+        run: |
+          set +e
+          timeout 1000 python -m unvibecode review --repository "$GITHUB_WORKSPACE/fixture_target" > evidence/fixture.log 2>&1
+          result=$?
+          set -e
+          echo "$result" > evidence/fixture-exit.txt
+          tail -n 55 evidence/fixture.log
+      - name: Clone independent pipx target at pinned revision
+        run: |
+          git clone --no-checkout https://github.com/pypa/pipx.git pipx_target
+          git -C pipx_target checkout --detach e7fa855353cc8c15f199b746d5e4d93b69f3c889
+          git -C pipx_target rev-parse HEAD > evidence/pipx-sha.txt
+      - name: Run independent pipx positive control
+        run: |
+          set +e
+          timeout 1200 python -m unvibecode review --repository "$GITHUB_WORKSPACE/pipx_target" > evidence/pipx.log 2>&1
+          result=$?
+          set -e
+          echo "$result" > evidence/pipx-exit.txt
+          tail -n 55 evidence/pipx.log
+      - name: Extract exact symbol diagnostics
+        if: always()
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import io,zipfile,json
+          out={"environment":{"python":"3.12","unvibecode":"0.4.0"},"reviews":{}}
+          for root in Path("unvibecode_results").glob("*"):
+              label=("fixture" if "fixture_target" in root.name else "pipx" if "pipx_target" in root.name else root.name)
+              obj={"directory":str(root),"bundles":[]}
+              for pack in root.glob("*repository-context.zip"):
+                  objpack={"path":str(pack),"counts":{},"related":[]}
+                  with zipfile.ZipFile(pack) as z:
+                      for name in ("connections.jsonl","unresolved_relationships.jsonl"):
+                          if name not in z.namelist():continue
+                          records=[json.loads(line) for line in z.read(name).decode().splitlines()]
+                          objpack["counts"][name]=len(records)
+                          objpack["related"].extend(
+                            {"from":name,"record":r} for r in records
+                            if any(key in json.dumps(r) for key in ("minicli/consumer.py","minicli/cli.py","main_alias","direct_cli","pipx/__main__.py","pipx/main.py","pipx.main"))
+                          )
+                  obj["bundles"].append(objpack)
+              out["reviews"][label]=obj
+          Path("evidence/comparison.json").write_text(json.dumps(out,indent=2),encoding="utf-8")
+          for name,record in out["reviews"].items():
+              print(name,[(e["counts"],len(e["related"])) for e in record["bundles"]])
+              for bundle in record["bundles"]:
+                  for rec in bundle["related"][:15]:print(json.dumps(rec)[:500])
+          PY
+      - name: Upload complete result artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: track1-c3-controls
+          path: |
+            evidence/
+            fixture_target/
+            unvibecode_results/
+          retention-days: 7
