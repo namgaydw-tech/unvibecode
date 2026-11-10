@@ -1,0 +1,81 @@
+name: Track 1 C3 reproducibility evidence
+on:
+  push:
+    branches: [track1-c3-repro-evidence]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  investigate:
+    name: Analyze ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - target: khal
+            repo: https://github.com/pimutils/khal.git
+            sha: 3ba0fcef06d5244a4a7330869a8d5f18a0342ce9
+          - target: pipx
+            repo: https://github.com/pypa/pipx.git
+            sha: e7fa855353cc8c15f199b746d5e4d93b69f3c889
+
+    env:
+      PYTHONUTF8: '1'
+      PYTHONUNBUFFERED: '1'
+      BROWSER: /bin/true
+
+    steps:
+      - name: Checkout investigation branch
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install official UnvibeCode
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade unvibecode
+          mkdir -p evidence
+          python --version > evidence/environment.txt
+          python -m pip --version >> evidence/environment.txt
+          python -m pip show unvibecode >> evidence/environment.txt
+          git --version >> evidence/environment.txt
+          python -m unvibecode --help > evidence/unvibecode-help.txt 2>&1
+      - name: Checkout pinned public target
+        run: |
+          set -euo pipefail
+          git clone --no-checkout "${{ matrix.repo }}" target
+          git -C target checkout --detach "${{ matrix.sha }}"
+          git -C target rev-parse HEAD > evidence/target-sha.txt
+          find target -maxdepth 3 -type f -name '*.toml' -o -name 'setup.cfg' | sort > evidence/packaging-paths.txt
+      - name: Run public repository review
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          timeout --signal=TERM --kill-after=20 1200 python -m unvibecode review --repository "$GITHUB_WORKSPACE/target" > evidence/review.log 2>&1
+          result=$?
+          echo "$result" > evidence/review-exit-code.txt
+          echo "Exit status: $result"
+          tail -n 80 evidence/review.log
+          exit 0
+      - name: Index generated artifacts
+        if: always()
+        run: |
+          find "$GITHUB_WORKSPACE" -type f \( -name 'analysis-status.json' -o -name 'connections.jsonl' -o -name 'chunks.jsonl' -o -name '*workflow*.html' -o -name '*connected*.html' -o -name '*context*.zip' \) -print > evidence/artifact-index.txt || true
+          sed -n '1,100p' evidence/artifact-index.txt
+      - name: Upload reproducibility evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c3-${{ matrix.target }}-evidence
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            evidence/
+            shipready_results/
+            target/shipready_results/
