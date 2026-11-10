@@ -68,6 +68,39 @@ jobs:
         run: |
           find "$GITHUB_WORKSPACE" -type f \( -name 'analysis-status.json' -o -name 'connections.jsonl' -o -name 'chunks.jsonl' -o -name '*workflow*.html' -o -name '*connected*.html' -o -name '*context*.zip' \) -print > evidence/artifact-index.txt || true
           sed -n '1,100p' evidence/artifact-index.txt
+      - name: Print package version and inspect graph bundle
+        if: always()
+        run: |
+          python -m pip show unvibecode
+          python - <<'PY'
+          from pathlib import Path
+          import json, zipfile
+          root = Path("unvibecode_results")
+          focus = ("main_khal", "main_ikhal", "khal/__main__.py", "khal/cli.py", "pipx/__main__.py", "src/pipx/main.py", "pipx.main")
+          output = {"result_root_exists": root.exists(), "bundles": [], "status": []}
+          for p in root.rglob("analysis-status.json"):
+              try:
+                  obj = json.loads(p.read_text(encoding="utf-8"))
+                  output["status"].append({"path": str(p), "overall_status": obj.get("overall_status"), "review_outcome": obj.get("review_outcome"), "keys": list(obj)})
+              except Exception as error:
+                  output["status"].append({"path": str(p), "error": str(error)})
+          for p in root.rglob("*.zip"):
+              if "context" not in p.name.lower():
+                  continue
+              zinfo = {"path": str(p), "files": [], "selected": []}
+              with zipfile.ZipFile(p) as bundle:
+                  for name in bundle.namelist():
+                      zinfo["files"].append(name)
+                      basename = name.rsplit("/", 1)[-1]
+                      if basename not in ("connections.jsonl", "unresolved_relationships.jsonl"):
+                          continue
+                      lines = bundle.read(name).decode("utf-8", "replace").splitlines()
+                      examples = [line[:950] for line in lines if any(term in line for term in focus)]
+                      zinfo["selected"].append({"file": name, "total": len(lines), "matching": len(examples), "examples": examples[:28]})
+              output["bundles"].append(zinfo)
+          Path("evidence/graph-analysis.json").write_text(json.dumps(output, indent=2), encoding="utf-8")
+          print(json.dumps(output, indent=2)[:29000])
+          PY
       - name: Upload reproducibility evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -77,5 +110,5 @@ jobs:
           if-no-files-found: warn
           path: |
             evidence/
-            shipready_results/
-            target/shipready_results/
+            unvibecode_results/
+            target/unvibecode_results/
